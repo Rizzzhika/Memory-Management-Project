@@ -2,7 +2,7 @@ from collections import deque
 import random
 scan_threshold = 100
 HOT_THRESHOLD = 6
-COLD_THREDHOLD = 2
+COLD_THRESHOLD = 2
 
 class Page:
     def __init__(self, page_id):
@@ -177,9 +177,6 @@ class MemorySystem:
     
     def access_page(self, cpu, page):
         cpu.access(page)
-
-    def get_victim(self,node):
-        return node.get_least_accessed_page()
 
 
 start = MemorySystem()  #we initialized the system that is created the nodes, CPU, etc.
