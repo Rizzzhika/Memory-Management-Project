@@ -1,4 +1,8 @@
 from collections import deque
+import random
+scan_threshold = 100
+HOT_THRESHOLD = 6
+COLD_THREDHOLD = 2
 
 class Page:
     def __init__(self, page_id):
@@ -11,15 +15,15 @@ class Page:
         self.access_frequency = 0 #how many times accessed in current window
         self.lap_level = 0 # LAP level 0 to 8 ( 0=coldest; 8=hottest); computed from access memory
     
-    def record_access(self, cpu_id):
+    def record_access(self, cpu_id): #this is for the page to record by whom it was accessed 
         self.last_accessed_cpu = cpu_id
-        self.accessed_scan = True
-        self.access_frequency += 1
+        self.accessed_scan = True 
+        self.access_frequency += 1 #tells the number of time the page got accessed 
     
     def update_history_on_scan(self):
         # shift left, add 1 if accessed, mask to 8 bits
         if self.accessed_scan:
-            self.access_history = ((self.access_history << 1) | 1) & 0xFF
+            self.access_history = ((self.access_history << 1) | 1) & 0xFF 
         else:
             self.access_history = (self.access_history << 1) & 0xFF
         
@@ -60,13 +64,13 @@ class MemoryNode:
         else:
             raise ValueError("INVALID TIER !!")
                 
-    def is_full(self):
+    def is_full(self):  #checks if the nodes is full 
         return len(self.pages) >= self.capacity
     
-    def free_slots(self):
+    def free_slots(self): #checks the empty slot in the node
         return self.capacity - len(self.pages)
     
-    def add_page(self, page):
+    def add_page(self, page): #add pages to the node
         self.pages.append(page)
         page.current_node = self
         self.lap_lists[page.lap_level].append(page)
@@ -118,6 +122,7 @@ class CPU:
 
 class MemorySystem:
     def __init__(self):
+        self.migration_counter = 0
         # create 4 nodes exactly 
         self.dram_0  = MemoryNode(0,"DRAM_node0", "upper", capacity=20, cpu_socket=0)
         self.dram_1  = MemoryNode(1, "DRAM_node1", "upper", capacity=20, cpu_socket=1)
@@ -160,3 +165,58 @@ class MemorySystem:
         for node in self.all_nodes:
             for page in (node.pages):
                 page.update_history_on_scan()
+
+    def move_logic(self, page, destination):
+
+        if page.current_node == destination:
+            return
+        home = page.current_node
+        home.remove_page(page)
+        destination.add_page(page)
+        self.migration_counter += 1
+    
+    def access_page(self, cpu, page):
+        cpu.access(page)
+
+    def get_victim(self,node):
+        return node.get_least_accessed_page()
+
+
+start = MemorySystem()  #we initialized the system that is created the nodes, CPU, etc.
+
+total_pages = 100 # we'll be changing the number of pages to show the simulation in different cases
+print("Number of pages:",total_pages)
+
+start.initialize_pages(total_pages)
+
+#simulation loop
+step = 0
+while(step != 20000):
+
+    number = random.randint(0,99)
+    cpu_select = random.choice(start.all_cpu)
+    half = total_pages//2
+
+
+    if number < 80:
+        if cpu_select.cpu_id == 0:
+            page_id = random.randint(0, half -1 )
+    
+        else:
+            page_id = random.randint(half, total_pages - 1)
+
+    else:
+        if cpu_select.cpu_id == 0:
+            page_id = random.randint(half, total_pages - 1)
+    
+        else:
+            page_id = random.randint(0, half - 1)
+
+    page_select = start.page_table[page_id] 
+    start.access_page(cpu_select,page_select)
+
+    step += 1
+
+    if (step%scan_threshold == 0):
+        start.SystemScan()
+
