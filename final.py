@@ -3,6 +3,8 @@ import random
 scan_threshold = 100
 HOT_THRESHOLD = 6
 COLD_THRESHOLD = 2
+MIGRATION_THRESHOLD = 2
+MAX_MIGRATIONS_PER_SCAN = 20
 
 class Page:
     def __init__(self, page_id):
@@ -178,6 +180,127 @@ class MemorySystem:
     def access_page(self, cpu, page):
         cpu.access(page)
 
+    def get_victim(self, node1, node2):
+        victim0 = node1.get_least_accessed_page()
+        victim1 = node2.get_least_accessed_page()
+
+        if victim0 is None:
+            return victim1
+        if victim1 is None:
+            return victim0
+
+        return victim0 if victim0.lap_level <= victim1.lap_level else victim1
+    
+    def OPM(self):
+    
+        for node in [self.dcpmm_2, self.dcpmm_3]:
+
+            # iterate from hottest levels
+            for level in range(HOT_THRESHOLD, 9):
+                # copy list to avoid modification issues
+                for page in list(node.lap_lists[level]):
+
+                    cpu_id = page.last_accessed_cpu
+
+                    # choose local DRAM
+                    target_dram = self.dram_0 if cpu_id == 0 else self.dram_1
+                    target_dcpmm = node  # fallback
+
+                    # if already in correct place → skip
+                    if page.current_node == target_dram:
+                        continue
+
+                    if not target_dram.is_full():
+                        self.move_logic(page, target_dram)
+
+                    else:
+                        victim = self.get_victim(self.dram_0, self.dram_1)
+
+                        if victim and page.lap_level > victim.lap_level:
+                            # evict victim to its DCPMM
+                            victim_cpu = victim.last_accessed_cpu
+                            victim_dcpmm = self.dcpmm_2 if victim_cpu == 0 else self.dcpmm_3
+
+                            self.move_logic(victim, victim_dcpmm)
+                            self.move_logic(page, target_dram)
+                        # else skip
+
+
+        for node in [self.dram_0, self.dram_1]:
+
+            for level in range(0, COLD_THRESHOLD + 1):
+                for page in list(node.lap_lists[level]):
+
+                    cpu_id = page.last_accessed_cpu
+                    target_dcpmm = self.dcpmm_2 if cpu_id == 0 else self.dcpmm_3
+
+                    self.move_logic(page, target_dcpmm)
+
+
+    def OPMX(self):
+
+        migrations_this_scan = 0
+
+        for node in [self.dcpmm_2, self.dcpmm_3]:
+
+            for level in range(HOT_THRESHOLD, 9):
+                for page in list(node.lap_lists[level]):
+
+                    # throttle migrations
+                    if migrations_this_scan >= MAX_MIGRATIONS_PER_SCAN:
+                        return
+
+                    cpu_id = page.last_accessed_cpu
+                    target_dram = self.dram_0 if cpu_id == 0 else self.dram_1
+
+                    # already in correct place
+                    if page.current_node == target_dram:
+                        continue
+
+                    if (page.access_history & 0b11) != 0b11:
+                        continue
+
+                    if not target_dram.is_full():
+                        if page.lap_level < (HOT_THRESHOLD + 1):
+                            continue
+                        else:
+                            self.move_logic(page, target_dram)
+                            migrations_this_scan += 1
+
+                    else:
+                        victim = self.get_victim(self.dram_0, self.dram_1)
+
+                        if victim is None:
+                            continue
+
+                        if (page.lap_level - victim.lap_level) < MIGRATION_THRESHOLD:
+                            continue  # skip small improvements
+
+                        # evict victim
+                        victim_cpu = victim.last_accessed_cpu
+                        victim_dcpmm = self.dcpmm_2 if victim_cpu == 0 else self.dcpmm_3
+
+                        self.move_logic(victim, victim_dcpmm)
+                        self.move_logic(page, target_dram)
+
+                        migrations_this_scan += 2
+
+
+        for node in [self.dram_0, self.dram_1]:
+
+            for level in range(0, COLD_THRESHOLD + 1):
+                for page in list(node.lap_lists[level]):
+
+                    if migrations_this_scan >= MAX_MIGRATIONS_PER_SCAN:
+                        return
+
+                    cpu_id = page.last_accessed_cpu
+                    target_dcpmm = self.dcpmm_2 if cpu_id == 0 else self.dcpmm_3
+
+                    if (page.access_history & 0b11) == 0:
+                        self.move_logic(page, target_dcpmm)
+                        migrations_this_scan += 1
+
 
 start = MemorySystem()  #we initialized the system that is created the nodes, CPU, etc.
 
@@ -216,4 +339,5 @@ while(step != 20000):
 
     if (step%scan_threshold == 0):
         start.SystemScan()
+        start.OPMX()
 
