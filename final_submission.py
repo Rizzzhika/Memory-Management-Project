@@ -1,20 +1,3 @@
-"""
-AutoTiering Simulation – v2
-===========================
-Conceptual fix: Migration Efficiency is defined differently per mode class:
-
-  Fault-driven  (baseline, cpm):
-      efficiency = fault_triggered_migrations / total_qualifying_faults
-      Meaning: of all faults that were eligible (above threshold, not local),
-               how many actually resulted in a move?
-               Blocked by throttle or full node → wasted fault → low efficiency.
-
-  Scan-driven   (opm, opmx):
-      efficiency = promotions / (promotions + demotions)
-      Meaning: what fraction of all scan-triggered moves were UPWARD (beneficial)?
-               A well-tuned policy promotes more than it demotes.
-               Pure churn (equal up/down) → 0.5. Dominantly upward → → 1.0.
-"""
 
 from collections import deque
 import random
