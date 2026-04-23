@@ -279,7 +279,7 @@ class MemorySystem:
         self.all_cpu    = [self.cpu0, self.cpu1]
 
     def initialize_pages(self, num_pages):
-        """Cold start: all pages in DCPMM, round-robin node-2 / node-3."""
+        """Cold start: all pages in DCPMM"""
         for i in range(num_pages):
             page   = Page(i)
             target = self.dcpmm_2 if i % 2 == 0 else self.dcpmm_3
