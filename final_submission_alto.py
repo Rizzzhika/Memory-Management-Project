@@ -614,46 +614,94 @@ class MemorySystem:
                           if pressure > ALTO_PRESSURE_LIMIT
                           else ALTO_MIN_SCORE_GAP)
 
-        # Promotion pass (DCPMM → DRAM) — triple gate
-        for node in [self.dcpmm_2, self.dcpmm_3]:
-            for level in range(8, HOT_THRESHOLD - 1, -1):
-                for page in list(node.lap_lists[level]):
-                    if done >= ALTO_MAX_MIGRATIONS: break
-                    cpu_id = page.last_accessed_cpu
-                    if cpu_id is None: continue
-                    target_dram = self.dram_0 if cpu_id == 0 else self.dram_1
-                    if page.current_node is target_dram: continue
-                    score = ml_scores.get(page.page_id, 0.0)
-                    if score < promote_thresh:
-                        self.stats.alto_ml_rejected += 1;     continue
-                    if page.hot_streak < HOT_STREAK_MIN:
-                        self.stats.alto_streak_rejected += 1; continue
-                    if not target_dram.is_full():
-                        self.move_logic(page, target_dram)
-                        done += 1
-                    else:
-                        victim = self.get_victim(self.dram_0, self.dram_1)
-                        if victim is None: continue
-                        if (score - ml_scores.get(victim.page_id, 0.0)) < gap_thresh:
-                            self.stats.alto_gap_rejected += 1; continue
-                        v_cpu   = victim.last_accessed_cpu
-                        v_dcpmm = self.dcpmm_2 if (v_cpu == 0 or v_cpu is None) else self.dcpmm_3
-                        self.move_logic(victim, v_dcpmm)
-                        self.move_logic(page, target_dram)
-                        done += 2
+        # ─────────────────────────────────────────────────────────────
+# Promotion pass (DCPMM → DRAM) — "triple gate" filtering
+# Goal: Only move truly important (hot + ML-approved) pages to fast memory
+# ─────────────────────────────────────────────────────────────
+for node in [self.dcpmm_2, self.dcpmm_3]:   # iterate over slow memory (DCPMM nodes)
+    for level in range(8, HOT_THRESHOLD - 1, -1):   # check hottest pages first (high LAP → low)
+        for page in list(node.lap_lists[level]):    # iterate over pages in this hotness level
 
-        # Demotion pass (DRAM → DCPMM) — loose single gate
-        for node in [self.dram_0, self.dram_1]:
-            for level in range(0, COLD_THRESHOLD + 1):
-                for page in list(node.lap_lists[level]):
-                    if done >= ALTO_MAX_MIGRATIONS: break
-                    score = ml_scores.get(page.page_id, 0.0)
-                    if score > ALTO_ML_DEMOTE_THRESH:
-                        self.stats.alto_ml_rejected += 1; continue
-                    cpu_id  = page.last_accessed_cpu
-                    t_dcpmm = self.dcpmm_2 if (cpu_id == 0 or cpu_id is None) else self.dcpmm_3
-                    self.move_logic(page, t_dcpmm)
-                    done += 1
+            # Stop if migration budget for this scan is exhausted
+            if done >= ALTO_MAX_MIGRATIONS: break
+
+            cpu_id = page.last_accessed_cpu
+            if cpu_id is None: continue   # skip if no access history
+
+            # Find the DRAM node closest to the CPU that accessed this page
+            target_dram = self.dram_0 if cpu_id == 0 else self.dram_1
+
+            # Skip if page is already in correct DRAM
+            if page.current_node is target_dram: continue
+
+            # Get ML (Kleio) hotness score for this page
+            score = ml_scores.get(page.page_id, 0.0)
+
+            # ── GATE 1: ML threshold check ─────────────────────
+            # Only promote if ML says page is important enough
+            if score < promote_thresh:
+                self.stats.alto_ml_rejected += 1   # track rejection reason
+                continue
+
+            # ── GATE 2: Stability check (hot streak) ───────────
+            # Avoid promoting pages that are only temporarily hot
+            if page.hot_streak < HOT_STREAK_MIN:
+                self.stats.alto_streak_rejected += 1
+                continue
+
+            # ── If DRAM has space → direct promotion ───────────
+            if not target_dram.is_full():
+                self.move_logic(page, target_dram)  # move page to DRAM
+                done += 1                           # count migration
+
+            else:
+                # ── DRAM full → need to evict a victim ─────────
+                victim = self.get_victim(self.dram_0, self.dram_1)
+                if victim is None: continue
+
+                # ── GATE 3: Score gap check ───────────────────
+                # Only replace victim if new page is significantly better
+                if (score - ml_scores.get(victim.page_id, 0.0)) < gap_thresh:
+                    self.stats.alto_gap_rejected += 1
+                    continue
+
+                # Decide where to demote victim (back to slow memory)
+                v_cpu   = victim.last_accessed_cpu
+                v_dcpmm = self.dcpmm_2 if (v_cpu == 0 or v_cpu is None) else self.dcpmm_3
+
+                # Perform swap: victim → DCPMM, new page → DRAM
+                self.move_logic(victim, v_dcpmm)
+                self.move_logic(page, target_dram)
+                done += 2   # two migrations (one demotion + one promotion)
+
+
+# ─────────────────────────────────────────────────────────────
+# Demotion pass (DRAM → DCPMM) — "single loose gate"
+# Goal: Remove cold/unimportant pages from DRAM
+# ─────────────────────────────────────────────────────────────
+for node in [self.dram_0, self.dram_1]:   # iterate over fast memory (DRAM)
+    for level in range(0, COLD_THRESHOLD + 1):   # check coldest pages first
+        for page in list(node.lap_lists[level]):
+
+            # Stop if migration budget exceeded
+            if done >= ALTO_MAX_MIGRATIONS: break
+
+            # Get ML score
+            score = ml_scores.get(page.page_id, 0.0)
+
+            # ── Demotion gate (loose) ─────────────────────────
+            # Only keep page in DRAM if ML says it's still useful
+            if score > ALTO_ML_DEMOTE_THRESH:
+                self.stats.alto_ml_rejected += 1   # reject demotion
+                continue
+
+            # Choose correct DCPMM node based on CPU locality
+            cpu_id  = page.last_accessed_cpu
+            t_dcpmm = self.dcpmm_2 if (cpu_id == 0 or cpu_id is None) else self.dcpmm_3
+
+            # Move cold page from DRAM → DCPMM
+            self.move_logic(page, t_dcpmm)
+            done += 1
 
 
 # ══════════════════════════════════════════════════════════════════════════════
