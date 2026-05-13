@@ -261,7 +261,7 @@ https://dl.acm.org/doi/10.1145/3698038.3698546
 
 # Team Contributions
 
-## Rizzzhika
+## [Rizzzhika](https://github.com/Rizzzhika)
 
 Implemented:
 
@@ -272,7 +272,7 @@ Implemented:
 - Memory management framework
 - Migration handling logic
 
-## kashish16official
+## [kashish16official](https://github.com/kashish16official)
 
 Implemented:
 
@@ -281,7 +281,7 @@ Implemented:
 - AutoNUMA extensions
 - Comparative integration
 
-## anshika18-ui
+## [anshikaui18-](https://github.com/anshika18-ui)
 
 Implemented:
 
