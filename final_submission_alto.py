@@ -618,90 +618,675 @@ class MemorySystem:
 # Promotion pass (DCPMM → DRAM) — "triple gate" filtering
 # Goal: Only move truly important (hot + ML-approved) pages to fast memory
 # ─────────────────────────────────────────────────────────────
-for node in [self.dcpmm_2, self.dcpmm_3]:   # iterate over slow memory (DCPMM nodes)
-    for level in range(8, HOT_THRESHOLD - 1, -1):   # check hottest pages first (high LAP → low)
-        for page in list(node.lap_lists[level]):    # iterate over pages in this hotness level
+        for node in [self.dcpmm_2, self.dcpmm_3]:   # iterate over slow memory (DCPMM nodes)
+            for level in range(8, HOT_THRESHOLD - 1, -1):   # check hottest pages first (high LAP → low)
+                for page in list(node.lap_lists[level]):    # iterate over pages in this hotness level
 
-            # Stop if migration budget for this scan is exhausted
-            if done >= ALTO_MAX_MIGRATIONS: break
+                    # Stop if migration budget for this scan is exhausted
+                    if done >= ALTO_MAX_MIGRATIONS: break
 
-            cpu_id = page.last_accessed_cpu
-            if cpu_id is None: continue   # skip if no access history
+                    cpu_id = page.last_accessed_cpu
+                    if cpu_id is None: continue   # skip if no access history
 
-            # Find the DRAM node closest to the CPU that accessed this page
-            target_dram = self.dram_0 if cpu_id == 0 else self.dram_1
+                    # Find the DRAM node closest to the CPU that accessed this page
+                    target_dram = self.dram_0 if cpu_id == 0 else self.dram_1
 
-            # Skip if page is already in correct DRAM
-            if page.current_node is target_dram: continue
+                    # Skip if page is already in correct DRAM
+                    if page.current_node is target_dram: continue
 
-            # Get ML (Kleio) hotness score for this page
-            score = ml_scores.get(page.page_id, 0.0)
+                    # Get ML (Kleio) hotness score for this page
+                    score = ml_scores.get(page.page_id, 0.0)
 
-            # ── GATE 1: ML threshold check ─────────────────────
-            # Only promote if ML says page is important enough
-            if score < promote_thresh:
-                self.stats.alto_ml_rejected += 1   # track rejection reason
-                continue
+                    # ── GATE 1: ML threshold check ─────────────────────
+                    # Only promote if ML says page is important enough
+                    if score < promote_thresh:
+                        self.stats.alto_ml_rejected += 1   # track rejection reason
+                        continue
 
-            # ── GATE 2: Stability check (hot streak) ───────────
-            # Avoid promoting pages that are only temporarily hot
-            if page.hot_streak < HOT_STREAK_MIN:
-                self.stats.alto_streak_rejected += 1
-                continue
+                    # ── GATE 2: Stability check (hot streak) ───────────
+                    # Avoid promoting pages that are only temporarily hot
+                    if page.hot_streak < HOT_STREAK_MIN:
+                        self.stats.alto_streak_rejected += 1
+                        continue
 
-            # ── If DRAM has space → direct promotion ───────────
-            if not target_dram.is_full():
-                self.move_logic(page, target_dram)  # move page to DRAM
-                done += 1                           # count migration
+                    # ── If DRAM has space → direct promotion ───────────
+                    if not target_dram.is_full():
+                        self.move_logic(page, target_dram)  # move page to DRAM
+                        done += 1                           # count migration
 
-            else:
-                # ── DRAM full → need to evict a victim ─────────
-                victim = self.get_victim(self.dram_0, self.dram_1)
-                if victim is None: continue
+                    else:
+                        # ── DRAM full → need to evict a victim ─────────
+                        victim = self.get_victim(self.dram_0, self.dram_1)
+                        if victim is None: continue
 
-                # ── GATE 3: Score gap check ───────────────────
-                # Only replace victim if new page is significantly better
-                if (score - ml_scores.get(victim.page_id, 0.0)) < gap_thresh:
-                    self.stats.alto_gap_rejected += 1
-                    continue
+                        # ── GATE 3: Score gap check ───────────────────
+                        # Only replace victim if new page is significantly better
+                        if (score - ml_scores.get(victim.page_id, 0.0)) < gap_thresh:
+                            self.stats.alto_gap_rejected += 1
+                            continue
 
-                # Decide where to demote victim (back to slow memory)
-                v_cpu   = victim.last_accessed_cpu
-                v_dcpmm = self.dcpmm_2 if (v_cpu == 0 or v_cpu is None) else self.dcpmm_3
+                        # Decide where to demote victim (back to slow memory)
+                        v_cpu   = victim.last_accessed_cpu
+                        v_dcpmm = self.dcpmm_2 if (v_cpu == 0 or v_cpu is None) else self.dcpmm_3
 
-                # Perform swap: victim → DCPMM, new page → DRAM
-                self.move_logic(victim, v_dcpmm)
-                self.move_logic(page, target_dram)
-                done += 2   # two migrations (one demotion + one promotion)
+                        # Perform swap: victim → DCPMM, new page → DRAM
+                        self.move_logic(victim, v_dcpmm)
+                        self.move_logic(page, target_dram)
+                        done += 2   # two migrations (one demotion + one promotion)
 
 
 # ─────────────────────────────────────────────────────────────
 # Demotion pass (DRAM → DCPMM) — "single loose gate"
 # Goal: Remove cold/unimportant pages from DRAM
 # ─────────────────────────────────────────────────────────────
-for node in [self.dram_0, self.dram_1]:   # iterate over fast memory (DRAM)
-    for level in range(0, COLD_THRESHOLD + 1):   # check coldest pages first
-        for page in list(node.lap_lists[level]):
+        for node in [self.dram_0, self.dram_1]:   # iterate over fast memory (DRAM)
+            for level in range(0, COLD_THRESHOLD + 1):   # check coldest pages first
+                for page in list(node.lap_lists[level]):
 
-            # Stop if migration budget exceeded
-            if done >= ALTO_MAX_MIGRATIONS: break
+                    # Stop if migration budget exceeded
+                    if done >= ALTO_MAX_MIGRATIONS: break
 
-            # Get ML score
-            score = ml_scores.get(page.page_id, 0.0)
+                    # Get ML score
+                    score = ml_scores.get(page.page_id, 0.0)
 
-            # ── Demotion gate (loose) ─────────────────────────
-            # Only keep page in DRAM if ML says it's still useful
-            if score > ALTO_ML_DEMOTE_THRESH:
-                self.stats.alto_ml_rejected += 1   # reject demotion
+                    # ── Demotion gate (loose) ─────────────────────────
+                    # Only keep page in DRAM if ML says it's still useful
+                    if score > ALTO_ML_DEMOTE_THRESH:
+                        self.stats.alto_ml_rejected += 1   # reject demotion
+                        continue
+
+                    # Choose correct DCPMM node based on CPU locality
+                    cpu_id  = page.last_accessed_cpu
+                    t_dcpmm = self.dcpmm_2 if (cpu_id == 0 or cpu_id is None) else self.dcpmm_3
+
+                    # Move cold page from DRAM → DCPMM
+                    self.move_logic(page, t_dcpmm)
+                    done += 1
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Simulation runner
+# ══════════════════════════════════════════════════════════════════════════════
+TOTAL_STEPS = 20_000
+MODES       = ["baseline", "cpm", "opm", "opmx", "tpp_alto", "alto_opm"]
+PAGE_COUNTS = [100, 200, 300]
+TOTAL_CAP   = 200
+
+SCAN_DRIVEN  = {"opm", "opmx", "tpp_alto", "alto_opm"}
+FAULT_DRIVEN = {"baseline", "cpm"}
+
+results = {}
+kleio   = KleioHotnessModel()
+
+for total_pages in PAGE_COUNTS:
+    results[total_pages] = {}
+    half = total_pages // 2
+
+    for mode in MODES:
+        st  = MigrationStats()
+        mem = MemorySystem(st)
+        sch = AutoNUMAScheduler()
+        mem.initialize_pages(total_pages)
+
+        tpp_state = dict(TPP_ALTO_CONFIG)
+        tpp_state["page_cntrs"] = {}
+
+        outcomes    = {}
+        latency_log = []
+        dram_hits   = 0
+        # TPP-Alto specific counters
+        tpp_active_promotions = 0
+        tpp_total_candidates  = 0
+
+        random.seed(42)
+
+        for step in range(TOTAL_STEPS):
+            number  = random.randint(0, 99)
+            cpu_sel = random.choice(mem.all_cpu)
+
+            if number < 80:
+                page_id = (random.randint(0, half - 1)
+                           if cpu_sel.cpu_id == 0
+                           else random.randint(half, total_pages - 1))
+            else:
+                page_id = (random.randint(half, total_pages - 1)
+                           if cpu_sel.cpu_id == 0
+                           else random.randint(0, half - 1))
+
+            page = mem.page_table[page_id]
+            if page.current_node is None:
+                outcomes["unmapped"] = outcomes.get("unmapped", 0) + 1
                 continue
 
-            # Choose correct DCPMM node based on CPU locality
-            cpu_id  = page.last_accessed_cpu
-            t_dcpmm = self.dcpmm_2 if (cpu_id == 0 or cpu_id is None) else self.dcpmm_3
+            result = cpu_sel.access(page, sch)
 
-            # Move cold page from DRAM → DCPMM
-            self.move_logic(page, t_dcpmm)
-            done += 1
+            if page.current_node and page.current_node.tier.upper() == 'UPPER':
+                dram_hits += 1
+
+            if result[0] == "fault":
+                outcome = mem.handle_numa_fault(
+                    page, cpu_sel.cpu_id, result[1], sch, mode=mode)
+                outcomes[outcome] = outcomes.get(outcome, 0) + 1
+
+                if mode in SCAN_DRIVEN and sch.access_count == 0:
+                    promo_before = st.promotions
+                    if   mode == "opm":      mem.opm()
+                    elif mode == "opmx":     mem.opmx()
+                    elif mode == "tpp_alto": mem.tpp_alto(tpp_state)
+                    elif mode == "alto_opm": mem.alto_opm(kleio)
+                    if mode == "tpp_alto":
+                        tpp_active_promotions += (st.promotions - promo_before)
+                        tpp_total_candidates  += sum(
+                            1 for n in [mem.dcpmm_2, mem.dcpmm_3, mem.dram_1]
+                            for lvl in range(HOT_THRESHOLD, 9)
+                            for p in n.lap_lists[lvl])
+            else:
+                outcomes["normal"] = outcomes.get("normal", 0) + 1
+
+            sch.tick(mem)
+
+            if (step + 1) % 500 == 0:
+                avg_lat = sum(c.avg_latency() for c in mem.all_cpu) / len(mem.all_cpu)
+                latency_log.append(avg_lat)
+
+        total_accesses = sum(c.total_accesses for c in mem.all_cpu)
+        avg_lat_final  = sum(c.avg_latency()  for c in mem.all_cpu) / len(mem.all_cpu)
+        dram_hit_ratio = dram_hits / total_accesses if total_accesses else 0
+
+        if mode in FAULT_DRIVEN:
+            mig_eff   = st.fault_driven_efficiency()
+            eff_label = "fault_migrated/fault_eligible"
+        else:
+            mig_eff   = st.scan_driven_efficiency()
+            eff_label = "promotions/(promotions+demotions)"
+
+        results[total_pages][mode] = {
+            "avg_latency"          : avg_lat_final,
+            "total_migrations"     : st.total(),
+            "promotions"           : st.promotions,
+            "demotions"            : st.demotions,
+            "lateral"              : st.lateral,
+            "fault_count"          : st.fault_eligible,
+            "fault_migrated"       : st.fault_migrated,
+            "migration_efficiency" : mig_eff,
+            "eff_label"            : eff_label,
+            "dram_hit_ratio"       : dram_hit_ratio,
+            "latency_log"          : latency_log,
+            "outcomes"             : outcomes,
+            "scan_generations"     : sch.current_generation,
+            "alto_ml_rejected"     : st.alto_ml_rejected,
+            "alto_gap_rejected"    : st.alto_gap_rejected,
+            "alto_streak_rejected" : st.alto_streak_rejected,
+            "alto_stab_rejected"   : st.alto_stab_rejected,
+            "alto_total_rejected"  : st.alto_total_rejected(),
+            "tpp_active_promotions": tpp_active_promotions,
+            "tpp_total_candidates" : tpp_total_candidates,
+        }
+
+        alto_str = (f"  rejected=(ml:{st.alto_ml_rejected} "
+                    f"gap:{st.alto_gap_rejected} streak:{st.alto_streak_rejected})"
+                    if mode == "alto_opm" else "")
+        print(f"[pages={total_pages:3d} | mode={mode:10s}] "
+              f"mig={st.total():5d} (↑{st.promotions} ↓{st.demotions} ↔{st.lateral})  "
+              f"avg_lat={avg_lat_final:.1f}ns  "
+              f"dram={dram_hit_ratio:.3f}  "
+              f"eff={mig_eff:.3f} [{eff_label}]{alto_str}")
+
+os.makedirs("outputs", exist_ok=True)
+with open("outputs/sim_results_v5.json", "w") as f:
+    json.dump(results, f, indent=2, default=str)
+print("\nJSON saved → outputs/sim_results_v5.json")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Plotting
+# ══════════════════════════════════════════════════════════════════════════════
+COLORS = {
+    "baseline" : "#e15759",
+    "cpm"      : "#f28e2b",
+    "opm"      : "#4e79a7",
+    "opmx"     : "#59a14f",
+    "tpp_alto" : "#76b7b2",   # teal — new
+    "alto_opm" : "#b07aa1",
+}
+LABELS = {
+    "baseline" : "BASELINE",
+    "cpm"      : "CPM",
+    "opm"      : "OPM",
+    "opmx"     : "OPMX",
+    "tpp_alto" : "TPP-ALTO",
+    "alto_opm" : "ALTO-OPM",
+}
+PAGE_LABELS = {
+    100: "Under-pressure\n(100 pages)",
+    200: "At-capacity\n(200 pages)",
+    300: "Over-pressure\n(300 pages)",
+}
+
+x       = np.arange(len(PAGE_COUNTS))
+width   = 0.12
+offsets = np.array([-2.5, -1.5, -0.5, 0.5, 1.5, 2.5]) * width
+ls_map  = {
+    "baseline" : "-",
+    "cpm"      : "--",
+    "opm"      : "-.",
+    "opmx"     : ":",
+    "tpp_alto" : (0, (5, 1)),
+    "alto_opm" : (0, (3, 1, 1, 1)),
+}
+
+
+def grouped_bar(ax, metric_key, title, ylabel, fmt=".1f"):
+    for mode, off in zip(MODES, offsets):
+        vals = [results[p][mode][metric_key] for p in PAGE_COUNTS]
+        bars = ax.bar(x + off, vals, width, label=LABELS[mode],
+                      color=COLORS[mode], edgecolor='white', linewidth=0.6)
+        for bar, v in zip(bars, vals):
+            ax.text(bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() * 1.02,
+                    f"{v:{fmt}}", ha='center', va='bottom', fontsize=5.5)
+    ax.set_xticks(x)
+    ax.set_xticklabels([PAGE_LABELS[p] for p in PAGE_COUNTS], fontsize=8)
+    ax.set_title(title, fontweight='bold', pad=8)
+    ax.set_ylabel(ylabel)
+    ax.legend(fontsize=6.5, ncol=2)
+    ax.grid(axis='y', alpha=0.3)
+
+
+# ── Graph 1: Main 3×3 overview ───────────────────────────────────────────────
+fig, axes = plt.subplots(3, 3, figsize=(26, 20))
+fig.suptitle(
+    "AutoTiering Simulation v5 — All 6 Algorithms\n"
+    "BASELINE · CPM · OPM · OPMX · TPP-ALTO · ALTO-OPM",
+    fontsize=11, fontweight='bold')
+
+# 1 · Avg Latency
+grouped_bar(axes[0][0], "avg_latency", "1 · Average Latency (ns)", "Latency (ns)")
+
+# 2 · Migration breakdown
+ax2   = axes[0][1]
+bar_w = width * 0.45
+for mode, off in zip(MODES, offsets):
+    proms = [results[p][mode]["promotions"] for p in PAGE_COUNTS]
+    dems  = [results[p][mode]["demotions"]  for p in PAGE_COUNTS]
+    ax2.bar(x + off - bar_w/2, proms, bar_w, color=COLORS[mode], alpha=0.9)
+    ax2.bar(x + off + bar_w/2, dems,  bar_w, color=COLORS[mode], alpha=0.45, hatch='//')
+ax2.set_xticks(x)
+ax2.set_xticklabels([PAGE_LABELS[p] for p in PAGE_COUNTS], fontsize=8)
+ax2.set_title("2 · Total Migrations\n(solid=promotions, hatched=demotions)", fontweight='bold', pad=8)
+ax2.set_ylabel("# Migrations")
+legend_els  = [Patch(facecolor=COLORS[m], label=LABELS[m]) for m in MODES]
+legend_els += [Patch(facecolor='grey', label='↑ Promotions'),
+               Patch(facecolor='grey', hatch='//', alpha=0.4, label='↓ Demotions')]
+ax2.legend(handles=legend_els, fontsize=5.5, ncol=2)
+ax2.grid(axis='y', alpha=0.3)
+
+# 3 · Eligible NUMA Faults
+grouped_bar(axes[0][2], "fault_count",
+            "3 · Eligible NUMA Faults\n(above threshold, non-local)", "# Faults", fmt=".0f")
+
+# 4A · Fault-driven Efficiency
+ax4a = axes[1][0]
+fw = width * 1.2
+for mode, off in zip(["baseline", "cpm"], [-fw/2, fw/2]):
+    vals = [results[p][mode]["migration_efficiency"] for p in PAGE_COUNTS]
+    bars = ax4a.bar(x + off, vals, fw, label=LABELS[mode],
+                    color=COLORS[mode], edgecolor='white')
+    for bar, v in zip(bars, vals):
+        ax4a.text(bar.get_x() + bar.get_width()/2,
+                  bar.get_height() + 0.005, f"{v:.3f}", ha='center', fontsize=8)
+ax4a.set_xticks(x)
+ax4a.set_xticklabels([PAGE_LABELS[p] for p in PAGE_COUNTS], fontsize=8)
+ax4a.set_title("4A · Fault-driven Efficiency\n(migrated / eligible faults)", fontweight='bold')
+ax4a.set_ylabel("Efficiency (0–1)")
+ax4a.legend()
+ax4a.grid(axis='y', alpha=0.3)
+
+# 4B · Scan-driven Efficiency — OPM vs OPMX vs TPP-ALTO vs ALTO-OPM
+ax4b = axes[1][1]
+sw   = width
+scan_modes = ["opm", "opmx", "tpp_alto", "alto_opm"]
+for mode, off in zip(scan_modes, np.array([-1.5, -0.5, 0.5, 1.5]) * sw):
+    vals = [results[p][mode]["migration_efficiency"] for p in PAGE_COUNTS]
+    bars = ax4b.bar(x + off, vals, sw, label=LABELS[mode],
+                    color=COLORS[mode], edgecolor='white')
+    for bar, v in zip(bars, vals):
+        ax4b.text(bar.get_x() + bar.get_width()/2,
+                  bar.get_height() + 0.01, f"{v:.3f}", ha='center', fontsize=7)
+ax4b.set_xticks(x)
+ax4b.set_xticklabels([PAGE_LABELS[p] for p in PAGE_COUNTS], fontsize=8)
+ax4b.set_ylim(0, 1.15)
+ax4b.axhline(0.5, color='red', linestyle='--', linewidth=1, label='0.5 baseline')
+ax4b.set_title("4B · Scan-driven Efficiency ★\n(promotions / (promo + demo))", fontweight='bold')
+ax4b.set_ylabel("Efficiency (0–1)")
+ax4b.legend(fontsize=7)
+ax4b.grid(axis='y', alpha=0.3)
+
+# 4C · ALTO gate rejection breakdown (stacked)
+ax4c = axes[1][2]
+alto_keys   = ["alto_ml_rejected", "alto_gap_rejected", "alto_streak_rejected"]
+alto_labels = ["ML threshold", "Score gap", "Hot-streak"]
+alto_colors = ["#d4a373", "#ccd5ae", "#a2d2ff"]
+bar_bottom  = np.zeros(len(PAGE_COUNTS))
+for key, lbl, col in zip(alto_keys, alto_labels, alto_colors):
+    vals = np.array([results[p]["alto_opm"][key] for p in PAGE_COUNTS], dtype=float)
+    ax4c.bar(x, vals, 0.4, bottom=bar_bottom, label=lbl, color=col, edgecolor='white')
+    bar_bottom += vals
+ax4c.set_xticks(x)
+ax4c.set_xticklabels([PAGE_LABELS[p] for p in PAGE_COUNTS], fontsize=8)
+ax4c.set_title("4C · ALTO-OPM Gate Rejections\n(stacked by reason)", fontweight='bold')
+ax4c.set_ylabel("# Moves Blocked")
+ax4c.legend(fontsize=8)
+ax4c.grid(axis='y', alpha=0.3)
+
+# 5 · Latency over time
+ax5 = axes[2][0]
+for pi, pages in enumerate(PAGE_COUNTS):
+    alpha = 0.5 + 0.25 * pi
+    for mode in MODES:
+        log   = results[pages][mode]["latency_log"]
+        steps = [(i + 1) * 500 for i in range(len(log))]
+        ax5.plot(steps, log, linestyle=ls_map[mode], color=COLORS[mode],
+                 alpha=alpha, linewidth=1.3,
+                 label=f"{pages}p {LABELS[mode]}" if pi == 0 else "_")
+mode_handles = [plt.Line2D([0],[0], color=COLORS[m], linewidth=2,
+                            linestyle=ls_map[m], label=LABELS[m]) for m in MODES]
+pg_handles   = [plt.Line2D([0],[0], color='grey', linewidth=1+pi,
+                            alpha=0.5+0.25*pi, label=f"{p} pages")
+                for pi, p in enumerate(PAGE_COUNTS)]
+ax5.legend(handles=mode_handles + pg_handles, fontsize=5.5, ncol=2)
+ax5.set_xlabel("Simulation Step")
+ax5.set_ylabel("Avg Latency (ns)")
+ax5.set_title("5 · Latency over Time", fontweight='bold', pad=8)
+ax5.grid(alpha=0.3)
+
+# 6 · DRAM Hit Ratio
+grouped_bar(axes[2][1], "dram_hit_ratio",
+            "6 · DRAM Hit Ratio\n(accesses served from upper tier)",
+            "Ratio (0–1)", fmt=".3f")
+
+# 7 · Efficiency vs Migrations scatter (scan-driven only)
+ax7 = axes[2][2]
+for mode in ["opm", "opmx", "tpp_alto", "alto_opm"]:
+    xs = [results[p][mode]["total_migrations"]     for p in PAGE_COUNTS]
+    ys = [results[p][mode]["migration_efficiency"] for p in PAGE_COUNTS]
+    ax7.scatter(xs, ys, color=COLORS[mode], s=100, label=LABELS[mode], zorder=5)
+    for xi, yi, p in zip(xs, ys, PAGE_COUNTS):
+        ax7.annotate(f"{p}p", (xi, yi),
+                     textcoords="offset points", xytext=(4, 3), fontsize=7)
+ax7.axhline(0.5, color='red', linestyle='--', linewidth=0.8, alpha=0.5)
+ax7.set_xlabel("Total Migrations")
+ax7.set_ylabel("Scan-driven Efficiency")
+ax7.set_title("7 · Efficiency vs Migrations\n(ideal: upper-left = high eff, low churn)",
+              fontweight='bold')
+ax7.legend(fontsize=8)
+ax7.grid(alpha=0.3)
+
+plt.tight_layout()
+out1 = "outputs/autoTiering_metrics_v5.png"
+plt.savefig(out1, dpi=150, bbox_inches='tight')
+print(f"Graph 1 (main overview) → {out1}")
+plt.close()
+
+
+# ── Graph 2: Promotion vs Demotion line chart (all 6 modes) ─────────────────
+fig2, axes2 = plt.subplots(1, 2, figsize=(16, 5))
+fig2.suptitle("Scan-driven Move Breakdown: Promotions vs Demotions — all 6 modes",
+              fontweight='bold')
+for ax, metric, label in zip(axes2,
+                              ["promotions", "demotions"],
+                              ["↑ Promotions (DCPMM→DRAM)", "↓ Demotions (DRAM→DCPMM)"]):
+    for mode in MODES:
+        vals = [results[p][mode][metric] for p in PAGE_COUNTS]
+        ax.plot(PAGE_COUNTS, vals, marker='o', linewidth=2,
+                linestyle=ls_map[mode], color=COLORS[mode], label=LABELS[mode])
+        for px, vy in zip(PAGE_COUNTS, vals):
+            ax.annotate(str(vy), (px, vy),
+                        textcoords="offset points", xytext=(0, 7), ha='center', fontsize=8)
+    ax.axvline(TOTAL_CAP, color='red', linestyle='--', linewidth=1.1,
+               label=f"Total cap ({TOTAL_CAP})")
+    ax.set_xticks(PAGE_COUNTS)
+    ax.set_xticklabels(["100\n(under)", "200\n(at cap)", "300\n(over)"])
+    ax.set_xlabel("Total Pages")
+    ax.set_ylabel("Count")
+    ax.set_title(label)
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+plt.tight_layout()
+out2 = "outputs/promo_vs_demo_v5.png"
+plt.savefig(out2, dpi=150)
+print(f"Graph 2 (promo/demo) → {out2}")
+plt.close()
+
+
+# ── Graph 3: ALTO-OPM rejection pie charts ───────────────────────────────────
+fig3, axes3 = plt.subplots(1, 3, figsize=(15, 5))
+fig3.suptitle("ALTO-OPM v4: Gate Rejection Breakdown (ML / Gap / Hot-streak)",
+              fontweight='bold')
+for ax, p in zip(axes3, PAGE_COUNTS):
+    r      = results[p]["alto_opm"]
+    sizes  = [r["alto_ml_rejected"], r["alto_gap_rejected"], r["alto_streak_rejected"]]
+    labels = [f"ML thresh\n({r['alto_ml_rejected']})",
+              f"Score gap\n({r['alto_gap_rejected']})",
+              f"Hot-streak\n({r['alto_streak_rejected']})"]
+    total_rej = sum(sizes)
+    if total_rej == 0:
+        ax.text(0.5, 0.5, "No rejections", ha='center', va='center',
+                transform=ax.transAxes)
+    else:
+        ax.pie(sizes, labels=labels, colors=["#d4a373", "#ccd5ae", "#a2d2ff"],
+               autopct='%1.1f%%', startangle=90)
+    ax.set_title(f"{PAGE_LABELS[p]}\n(total rejected: {total_rej})")
+plt.tight_layout()
+out3 = "outputs/alto_rejection_breakdown_v5.png"
+plt.savefig(out3, dpi=150)
+print(f"Graph 3 (ALTO rejection) → {out3}")
+plt.close()
+
+
+# ── Graph 4: TPP-Alto vs ALTO-OPM head-to-head ───────────────────────────────
+fig4, axes4 = plt.subplots(1, 3, figsize=(18, 5))
+fig4.suptitle("Graph 4 · TPP-ALTO vs ALTO-OPM: Head-to-Head Comparison",
+              fontweight='bold')
+metrics_hth = [
+    ("avg_latency",          "Average Latency (ns)",           ".1f"),
+    ("migration_efficiency", "Scan-driven Efficiency",         ".3f"),
+    ("dram_hit_ratio",       "DRAM Hit Ratio",                 ".3f"),
+]
+for ax, (mkey, mtitle, mfmt) in zip(axes4, metrics_hth):
+    bw  = 0.28
+    for mode, off in zip(["tpp_alto", "alto_opm"], [-bw/2, bw/2]):
+        vals = [results[p][mode][mkey] for p in PAGE_COUNTS]
+        bars = ax.bar(x + off, vals, bw, label=LABELS[mode],
+                      color=COLORS[mode], edgecolor='white')
+        for bar, v in zip(bars, vals):
+            ax.text(bar.get_x() + bar.get_width()/2,
+                    bar.get_height() * 1.02, f"{v:{mfmt}}",
+                    ha='center', va='bottom', fontsize=8)
+    ax.set_xticks(x)
+    ax.set_xticklabels([PAGE_LABELS[p] for p in PAGE_COUNTS], fontsize=8)
+    ax.set_title(mtitle, fontweight='bold')
+    ax.legend(fontsize=9)
+    ax.grid(axis='y', alpha=0.3)
+plt.tight_layout()
+out4 = "outputs/tpp_vs_alto_headtohead_v5.png"
+plt.savefig(out4, dpi=150)
+print(f"Graph 4 (TPP vs ALTO head-to-head) → {out4}")
+plt.close()
+
+
+# ── Graph 5: TPP-Alto active-page promotion analysis ─────────────────────────
+fig5, axes5 = plt.subplots(1, 2, figsize=(14, 5))
+fig5.suptitle("Graph 5 · TPP-ALTO: Active-page Filtering & Promotion Quota Analysis",
+              fontweight='bold')
+
+# 5a: Promotions vs total migrations (TPP-Alto)
+ax5a = axes5[0]
+tpp_proms  = [results[p]["tpp_alto"]["promotions"]       for p in PAGE_COUNTS]
+tpp_total  = [results[p]["tpp_alto"]["total_migrations"] for p in PAGE_COUNTS]
+tpp_dems   = [results[p]["tpp_alto"]["demotions"]        for p in PAGE_COUNTS]
+bw = 0.25
+bars_p = ax5a.bar(x - bw, tpp_proms, bw, label="Promotions", color=COLORS["tpp_alto"], alpha=0.9)
+bars_d = ax5a.bar(x,       tpp_dems,  bw, label="Demotions",  color=COLORS["tpp_alto"], alpha=0.5, hatch="//")
+bars_t = ax5a.bar(x + bw,  tpp_total, bw, label="Total mig.",  color="#555555", alpha=0.6)
+for bars, vals in [(bars_p, tpp_proms), (bars_d, tpp_dems), (bars_t, tpp_total)]:
+    for bar, v in zip(bars, vals):
+        ax5a.text(bar.get_x() + bar.get_width()/2,
+                  bar.get_height() * 1.02, str(v),
+                  ha='center', va='bottom', fontsize=8)
+ax5a.set_xticks(x)
+ax5a.set_xticklabels([PAGE_LABELS[p] for p in PAGE_COUNTS], fontsize=8)
+ax5a.set_title("TPP-ALTO: Promotion / Demotion / Total", fontweight='bold')
+ax5a.set_ylabel("# Migrations")
+ax5a.legend(fontsize=8)
+ax5a.grid(axis='y', alpha=0.3)
+
+# 5b: TPP-Alto efficiency vs all scan-driven algorithms
+ax5b = axes5[1]
+for mode in ["opm", "opmx", "tpp_alto", "alto_opm"]:
+    vals = [results[p][mode]["migration_efficiency"] for p in PAGE_COUNTS]
+    ax5b.plot(PAGE_COUNTS, vals, marker='o', linewidth=2,
+              linestyle=ls_map[mode], color=COLORS[mode], label=LABELS[mode])
+    for px, vy in zip(PAGE_COUNTS, vals):
+        ax5b.annotate(f"{vy:.3f}", (px, vy),
+                      textcoords="offset points", xytext=(0, 8),
+                      ha='center', fontsize=7.5)
+ax5b.axhline(0.5, color='red', linestyle='--', linewidth=1, label='0.5 baseline')
+ax5b.set_xticks(PAGE_COUNTS)
+ax5b.set_xticklabels(["100\n(under)", "200\n(at cap)", "300\n(over)"])
+ax5b.set_xlabel("Total Pages")
+ax5b.set_ylabel("Scan-driven Efficiency")
+ax5b.set_title("Scan-driven Efficiency: All 4 Scan Algorithms", fontweight='bold')
+ax5b.legend(fontsize=8)
+ax5b.grid(alpha=0.3)
+ax5b.set_ylim(0, 1.1)
+
+plt.tight_layout()
+out5 = "outputs/tpp_alto_analysis_v5.png"
+plt.savefig(out5, dpi=150)
+print(f"Graph 5 (TPP-ALTO analysis) → {out5}")
+plt.close()
+
+
+# ── Graph 6: Six-algorithm radar / spider chart ───────────────────────────────
+metrics_radar = ["avg_latency", "migration_efficiency", "dram_hit_ratio",
+                 "total_migrations", "fault_count"]
+metric_labels = ["Avg Latency\n(lower=better)", "Mig Efficiency\n(higher=better)",
+                 "DRAM Hit Ratio\n(higher=better)", "Total Mig\n(lower=better)",
+                 "Fault Count\n(lower=better)"]
+
+fig6 = plt.figure(figsize=(19, 6))
+fig6.suptitle("Graph 6 · All Algorithms — Metric Radar (normalised per pressure scenario)",
+              fontweight='bold')
+
+for idx, pc in enumerate(PAGE_COUNTS):
+    ax = fig6.add_subplot(1, 3, idx + 1, projection='polar')
+
+    raw = {m: {mode: results[pc][mode][m] for mode in MODES} for m in metrics_radar}
+    invert = {"avg_latency", "total_migrations", "fault_count"}
+    norm = {}
+    for m in metrics_radar:
+        vals = list(raw[m].values())
+        lo, hi = min(vals), max(vals)
+        span = hi - lo if hi != lo else 1
+        for mode in MODES:
+            v = (raw[m][mode] - lo) / span
+            norm.setdefault(mode, {})[m] = (1 - v) if m in invert else v
+
+    n_vars = len(metrics_radar)
+    angles = np.linspace(0, 2*np.pi, n_vars, endpoint=False).tolist()
+    angles += angles[:1]
+
+    ax.set_theta_offset(np.pi / 2)
+    ax.set_theta_direction(-1)
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels(metric_labels, size=6.5)
+    ax.set_yticks([0.25, 0.5, 0.75, 1.0])
+    ax.set_yticklabels(["0.25", "0.50", "0.75", "1.00"], size=5.5)
+    ax.set_ylim(0, 1)
+
+    for mode in MODES:
+        values = [norm[mode][m] for m in metrics_radar]
+        values += values[:1]
+        ax.plot(angles, values, linewidth=1.5, linestyle='solid',
+                color=COLORS[mode], label=LABELS[mode])
+        ax.fill(angles, values, color=COLORS[mode], alpha=0.08)
+
+    ax.set_title(PAGE_LABELS[pc], fontweight='bold', size=9, pad=14)
+    if idx == 2:
+        ax.legend(loc='upper right', bbox_to_anchor=(1.45, 1.15), fontsize=7)
+
+plt.tight_layout()
+out6 = "outputs/radar_all_algorithms_v5.png"
+plt.savefig(out6, dpi=150, bbox_inches='tight')
+print(f"Graph 6 (radar chart) → {out6}")
+plt.close()
+
+print("\nAll done. Outputs in ./outputs/")
+print("Files generated:")
+for f in [out1, out2, out3, out4, out5, out6]:
+    print(f"  {f}")                    self.stats.alto_ml_rejected += 1   # track rejection reason
+                    continue
+    
+                # ── GATE 2: Stability check (hot streak) ───────────
+                # Avoid promoting pages that are only temporarily hot
+                if page.hot_streak < HOT_STREAK_MIN:
+                    self.stats.alto_streak_rejected += 1
+                    continue
+    
+                # ── If DRAM has space → direct promotion ───────────
+                if not target_dram.is_full():
+                    self.move_logic(page, target_dram)  # move page to DRAM
+                    done += 1                           # count migration
+    
+                else:
+                    # ── DRAM full → need to evict a victim ─────────
+                    victim = self.get_victim(self.dram_0, self.dram_1)
+                    if victim is None: continue
+    
+                    # ── GATE 3: Score gap check ───────────────────
+                    # Only replace victim if new page is significantly better
+                    if (score - ml_scores.get(victim.page_id, 0.0)) < gap_thresh:
+                        self.stats.alto_gap_rejected += 1
+                        continue
+    
+                    # Decide where to demote victim (back to slow memory)
+                    v_cpu   = victim.last_accessed_cpu
+                    v_dcpmm = self.dcpmm_2 if (v_cpu == 0 or v_cpu is None) else self.dcpmm_3
+    
+                    # Perform swap: victim → DCPMM, new page → DRAM
+                    self.move_logic(victim, v_dcpmm)
+                    self.move_logic(page, target_dram)
+                    done += 2   # two migrations (one demotion + one promotion)
+    
+    
+    # ─────────────────────────────────────────────────────────────
+    # Demotion pass (DRAM → DCPMM) — "single loose gate"
+    # Goal: Remove cold/unimportant pages from DRAM
+    # ─────────────────────────────────────────────────────────────
+    for node in [self.dram_0, self.dram_1]:   # iterate over fast memory (DRAM)
+        for level in range(0, COLD_THRESHOLD + 1):   # check coldest pages first
+            for page in list(node.lap_lists[level]):
+    
+                # Stop if migration budget exceeded
+                if done >= ALTO_MAX_MIGRATIONS: break
+    
+                # Get ML score
+                score = ml_scores.get(page.page_id, 0.0)
+    
+                # ── Demotion gate (loose) ─────────────────────────
+                # Only keep page in DRAM if ML says it's still useful
+                if score > ALTO_ML_DEMOTE_THRESH:
+                    self.stats.alto_ml_rejected += 1   # reject demotion
+                    continue
+    
+                # Choose correct DCPMM node based on CPU locality
+                cpu_id  = page.last_accessed_cpu
+                t_dcpmm = self.dcpmm_2 if (cpu_id == 0 or cpu_id is None) else self.dcpmm_3
+    
+                # Move cold page from DRAM → DCPMM
+                self.move_logic(page, t_dcpmm)
+                done += 1
 
 
 # ══════════════════════════════════════════════════════════════════════════════
