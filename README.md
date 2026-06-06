@@ -1,22 +1,54 @@
 # ML-Augmented Multi-Tier Memory Management for NUMA Systems
 
-A simulation-based Operating Systems project implementing and comparing multiple page-management and memory-tiering algorithms for heterogeneous NUMA architectures using DRAM and Persistent Memory (DCPMM). The project extends traditional AutoNUMA-style migration with scan-driven policies and machine-learning-assisted page placement.
+![Python](https://img.shields.io/badge/Python-3.x-blue)
+![OS Project](https://img.shields.io/badge/Domain-Operating%20Systems-green)
+![NUMA](https://img.shields.io/badge/Focus-NUMA%20Memory-orange)
+![ML](https://img.shields.io/badge/ML-Augmented-purple)
 
 ---
 
 # Project Overview
 
-Modern servers increasingly use **multi-tier memory systems** where fast DRAM coexists with slower but larger persistent memory such as Intel Optane DCPMM. Efficient page placement across these tiers is critical for reducing memory-access latency and improving system performance.
 
-This project simulates and evaluates:
+This project presents a simulation-based study of memory-tiering and page-management strategies for heterogeneous NUMA systems using DRAM and Persistent Memory (DCPMM).
 
-- Fault-driven memory migration policies
-- Scan-driven page promotion/demotion techniques
-- ML-augmented page hotness prediction
-- NUMA-aware memory tiering
-- TPP-ALTO style Linux kernel behavior
+The simulator evaluates both traditional fault-driven approaches and advanced scan-driven, ML-assisted page placement policies inspired by modern Linux kernel memory-management research.
 
-The implementation is inspired by research on AutoTiering, Kleio, and multi-tier memory systems.
+Implemented algorithms include:
+
+* Linux AutoNUMA
+* CPM
+* OPM / OPMX
+* TPP-ALTO
+* ALTO-OPM
+
+The project focuses on reducing memory-access latency, improving DRAM utilization, and optimizing migration efficiency under varying memory-pressure scenarios.
+
+
+---
+## Experimental Results
+
+### Overall Performance Comparison
+
+![Overall Comparison](images/autoTiering_metrics_v5.png)
+
+This graph compares latency, migration efficiency, DRAM hit ratio, and migration behavior across all implemented algorithms under different memory-pressure scenarios.
+
+---
+
+### TPP-ALTO vs ALTO-OPM
+
+![TPP vs ALTO](images/tpp_vs_alto_headtohead_v5.png)
+
+Head-to-head comparison between traditional scan-driven tiering and ML-augmented page migration strategies.
+
+---
+
+### Multi-Metric Radar Comparison
+
+![Radar Comparison](images/radar_all_algorithms_v5.png)
+
+Radar visualization comparing latency, DRAM utilization, migration stability, and scan efficiency across all algorithms.
 
 ---
 
@@ -28,6 +60,15 @@ The implementation is inspired by research on AutoTiering, Kleio, and multi-tier
 ├── final_submission_ml.py
 └── README.md
 ```
+## Main Execution File
+
+The final integrated implementation with ML-assisted memory tiering is:
+
+```bash
+python final_submission_ml.py
+```
+
+Other files contain intermediate implementations and modular development stages used during experimentation and comparative evaluation.
 
 ## 1. `final.py`
 
@@ -307,17 +348,6 @@ Implemented:
 
 # How to Run
 
-```bash
-python final.py
-```
-
-or
-
-```bash
-python final_submission.py
-```
-
-or
 
 ```bash
 python final_submission_ml.py
